@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TipStream</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <div class="header-left">
+        <span class="logo">T</span>
+        <div>
+          <h1>TIPSTREAM</h1>
+          <p class="subtitle">AI TIPPING AGENTS</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <button id="btn-auto-tip" class="btn-toggle" title="Toggle Auto-Tip">OFF</button>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav id="tabs">
+      <button class="tab active" data-tab="dashboard">DASH</button>
+      <button class="tab" data-tab="tip">TIP</button>
+      <button class="tab" data-tab="history">LOG</button>
+      <button class="tab" data-tab="settings">SET</button>
+    </nav>
+
+    <!-- Messages -->
+    <div id="msg-success" class="msg msg-ok" style="display:none"></div>
+    <div id="msg-error" class="msg msg-err" style="display:none"></div>
+
+    <!-- ═══ ONBOARDING ═══ -->
+    <section id="view-onboard" class="view">
+      <div class="card">
+        <div class="card-header">CONNECT WALLET</div>
+        <div class="card-body">
+          <button id="btn-gen-seed" class="btn btn-accent full">GENERATE SEED PHRASE</button>
+          <div id="seed-display" style="display:none" class="seed-grid"></div>
+          <div class="divider"><span>OR PASTE EXISTING</span></div>
+          <textarea id="input-seed" placeholder="enter 12 or 24 word seed phrase..." rows="2"></textarea>
+          <button id="btn-connect" class="btn btn-primary full">CONNECT</button>
+          <p class="hint">Your seed is stored locally in the extension. Never shared.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ DASHBOARD ═══ -->
+    <section id="view-dashboard" class="view" style="display:none">
+      <!-- Wallet -->
+      <div class="card">
+        <div class="card-header">WALLET <a id="wallet-link" href="#" target="_blank" class="link-ext">↗</a></div>
+        <div class="card-body">
+          <div id="wallet-address" class="mono truncate"></div>
+          <div class="stat-row">
+            <div class="stat"><span class="stat-val" id="stat-eth">0</span><span class="stat-label">ETH</span></div>
+            <div class="stat"><span class="stat-val accent" id="stat-usdt">$0.00</span><span class="stat-label">USDt</span></div>
+            <div class="stat"><span class="stat-val" id="stat-chain">—</span><span class="stat-label">CHAIN</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Rumble -->
+      <div class="card">
+        <div class="card-header">RUMBLE</div>
+        <div class="card-body" id="rumble-section">
+          <div id="rumble-connected" style="display:none">
+            <div class="flex-between">
+              <span><span class="dot dot-green"></span> <strong id="rumble-user">—</strong></span>
+              <button id="btn-rumble-dc" class="btn-sm">DC</button>
+            </div>
+            <div class="stat-row">
+              <div class="stat"><span class="stat-val" id="stat-live">Offline</span><span class="stat-label">STATUS</span></div>
+              <div class="stat"><span class="stat-val" id="stat-followers">0</span><span class="stat-label">FOLLOWERS</span></div>
+            </div>
+          </div>
+          <div id="rumble-disconnected">
+            <input id="input-rumble" placeholder="Rumble API key..." />
+            <button id="btn-rumble" class="btn btn-secondary full">CONNECT RUMBLE</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hype -->
+      <div class="card">
+        <div class="card-header">HYPE SCORE</div>
+        <div class="card-body">
+          <div class="hype-row">
+            <div class="hype-gauge">
+              <svg viewBox="0 0 100 100" width="80" height="80">
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#333" stroke-width="8"/>
+                <circle id="hype-arc" cx="50" cy="50" r="40" fill="none" stroke="#10B981" stroke-width="8"
+                  stroke-linecap="butt" stroke-dasharray="0 251" transform="rotate(-90 50 50)"/>
+              </svg>
+              <div class="hype-number" id="hype-score">0</div>
+            </div>
+            <div class="hype-details">
+              <div class="hype-detail"><span>VEL</span><span id="hype-vel">0</span></div>
+              <div class="hype-detail"><span>SENT</span><span id="hype-sent">0%</span></div>
+              <div class="hype-detail"><span>EMOJI</span><span id="hype-emoji">0%</span></div>
+              <div class="hype-detail"><span>KEYS</span><span id="hype-keys" class="truncate">—</span></div>
+            </div>
+          </div>
+          <div class="hype-bar"><div id="hype-fill" class="hype-fill"></div></div>
+          <button id="btn-cycle" class="btn btn-accent full">⚡ RUN AGENT CYCLE</button>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="card">
+        <div class="card-header">STATS</div>
+        <div class="card-body">
+          <div class="stat-row">
+            <div class="stat"><span class="stat-val accent" id="stat-tipped">$0.00</span><span class="stat-label">TIPPED</span></div>
+            <div class="stat"><span class="stat-val" id="stat-count">0</span><span class="stat-label">TIPS</span></div>
+            <div class="stat"><span class="stat-val" id="stat-fav">—</span><span class="stat-label">FAVORITE</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ TIP TAB ═══ -->
+    <section id="view-tip" class="view" style="display:none">
+      <!-- Register -->
+      <div class="card">
+        <div class="card-header">REGISTER CREATOR</div>
+        <div class="card-body">
+          <input id="reg-user" placeholder="Rumble username" />
+          <input id="reg-addr" placeholder="0x... EVM address" class="mono" />
+          <button id="btn-register" class="btn btn-secondary full">REGISTER</button>
+          <div id="creators-list" class="list"></div>
+        </div>
+      </div>
+
+      <!-- Send tip -->
+      <div class="card">
+        <div class="card-header">SEND TIP</div>
+        <div class="card-body">
+          <select id="tip-creator"><option value="">select creator...</option></select>
+          <div class="input-row">
+            <span class="input-prefix">$</span>
+            <input id="tip-amount" type="number" step="0.01" value="0.50" />
+            <span class="input-suffix">USDt</span>
+          </div>
+          <button id="btn-tip" class="btn btn-accent full">SEND TIP</button>
+        </div>
+      </div>
+
+      <!-- Budget -->
+      <div class="card">
+        <div class="card-header">BUDGET RULES</div>
+        <div class="card-body">
+          <select id="budget-creator"><option value="">select creator...</option></select>
+          <div class="grid-3">
+            <div><label>$/MO</label><input id="budget-monthly" type="number" value="20" /></div>
+            <div><label>$/TIP</label><input id="budget-per" type="number" step="0.01" value="0.50" /></div>
+            <div><label>CD(s)</label><input id="budget-cd" type="number" value="60" /></div>
+          </div>
+          <button id="btn-budget" class="btn btn-secondary full">SAVE BUDGET</button>
+          <div id="budgets-list" class="list"></div>
+        </div>
+      </div>
+
+      <!-- Pool -->
+      <div class="card">
+        <div class="card-header">COMMUNITY POOL</div>
+        <div class="card-body">
+          <div class="grid-3">
+            <input id="pool-name" placeholder="Name" />
+            <input id="pool-creator" placeholder="Creator" />
+            <button id="btn-pool" class="btn btn-secondary">CREATE</button>
+          </div>
+          <div id="pools-list" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ HISTORY TAB ═══ -->
+    <section id="view-history" class="view" style="display:none">
+      <div class="card">
+        <div class="card-header">TIP HISTORY</div>
+        <div class="card-body">
+          <div id="history-list" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ SETTINGS TAB ═══ -->
+    <section id="view-settings" class="view" style="display:none">
+      <div class="card">
+        <div class="card-header">CHAIN</div>
+        <div class="card-body">
+          <select id="setting-chain">
+            <option value="polygon">Polygon (~$0.001 gas)</option>
+            <option value="arbitrum">Arbitrum (~$0.01 gas)</option>
+            <option value="ethereum">Ethereum (~$1-5 gas)</option>
+            <option value="sepolia" selected>Sepolia (testnet)</option>
+          </select>
+          <button id="btn-chain" class="btn btn-secondary full">SWITCH CHAIN</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">AGENT CONFIG</div>
+        <div class="card-body">
+          <div class="setting-row">
+            <span>Hype Threshold</span>
+            <div class="setting-input"><input id="set-hype" type="range" min="10" max="100" value="70" /><span id="set-hype-val">70</span></div>
+          </div>
+          <div class="setting-row">
+            <span>Default Tip</span>
+            <div class="setting-input">$<input id="set-tip" type="number" step="0.1" value="0.50" class="sm" /></div>
+          </div>
+          <div class="setting-row">
+            <span>Max Tip</span>
+            <div class="setting-input">$<input id="set-max" type="number" step="0.5" value="5.00" class="sm" /></div>
+          </div>
+          <div class="setting-row">
+            <span>Cooldown</span>
+            <div class="setting-input"><input id="set-cd" type="number" value="60" class="sm" />s</div>
+          </div>
+          <div class="setting-row">
+            <span>Monthly Budget</span>
+            <div class="setting-input">$<input id="set-budget" type="number" value="20" class="sm" /></div>
+          </div>
+          <button id="btn-save-settings" class="btn btn-secondary full">SAVE SETTINGS</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">CONNECTIONS</div>
+        <div class="card-body">
+          <div id="connections-list" class="list"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">WALLET</div>
+        <div class="card-body">
+          <button id="btn-disconnect" class="btn btn-danger full">DISCONNECT WALLET</button>
+          <p class="hint">Clears seed from extension storage.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/dist/sidebar.js"></script>
+</body>
+</html>
