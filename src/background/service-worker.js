@@ -1,349 +1,595 @@
 // ═══════════════════════════════════════════
-// TipStream Extension — Service Worker
-// Central message router + agent orchestrator
+// TipStream Extension — Service Worker (FIXED)
+// Autonomous: WATCH_UPDATE triggers tip evaluation
+// Bypasses decideTip() in-memory gate — uses address from content script
+// Chat hype analysis + LLM reasoning + WDK tips
 // ═══════════════════════════════════════════
 
 import {
-    initWallet, restoreWallet, isReady, getBalances,
-    sendTip, switchChain, generateSeed, getAddress,
-  } from "./wallet.js";
-  import {
-    getStore, setStore, setKey,
-    addTip, getTips, getDashboard,
-    setCreator, getCreator, getAllCreators,
-    getOrCreateBudget, saveBudget, getBudgets,
-    addPool, getPools, fundPool,
-    addHypeScore, getLatestHype, getHypeHistory,
-    getAgentSettings, saveAgentSettings,
-  } from "./store.js";
-  import { analyzeHype, deduplicateSpam } from "./hype-agent.js";
-  import { decideTip } from "./budget-agent.js";
-  import { RUMBLE_API_URL } from "./config.js";
-  
-  // ── Restore wallet on startup ──
-  
-  try {
-    restoreWallet().then((ok) => {
-      if (ok) console.log("[TipStream] Wallet restored from storage");
-      else console.log("[TipStream] No stored wallet — waiting for setup");
-    }).catch((err) => {
-      console.warn("[TipStream] Wallet restore failed (normal on first run):", err.message);
-    });
-  } catch (err) {
-    console.warn("[TipStream] Init error:", err.message);
-  }
-  
-  // ── Open sidebar when extension icon clicked ──
+  initWallet, restoreWallet, isReady, getBalances,
+  sendTip, switchChain, generateSeed, getAddress,
+} from "./wallet.js";
+import {
+  getStore, setStore, setKey, getKey,
+  addTip, getTips, getDashboard,
+  setCreator, getCreator, getAllCreators,
+  getOrCreateBudget, saveBudget, getBudgets,
+  addPool, getPools, fundPool,
+  addHypeScore, getLatestHype, getHypeHistory,
+  getAgentSettings, saveAgentSettings,
+} from "./store.js";
+import { analyzeHype, deduplicateSpam } from "./hype-agent.js";
+import { RUMBLE_API_URL } from "./config.js";
+import { llmEvaluate } from "./llm-agent.js";
 
+// ── Restore wallet on startup ──
+try {
+  restoreWallet().then((ok) => {
+    if (ok) console.log("[TipStream] Wallet restored from storage");
+    else console.log("[TipStream] No stored wallet — waiting for setup");
+  }).catch((err) => {
+    console.warn("[TipStream] Wallet restore failed:", err.message);
+  });
+} catch (err) {
+  console.warn("[TipStream] Init error:", err.message);
+}
+
+// ── Sidebar ──
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
-.catch((err) => console.error("[TipStream] sidePanel behavior error:", err));
-  
-  // Enable sidebar on Rumble pages
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (tab.url && tab.url.includes("rumble.com")) {
-      chrome.sidePanel.setOptions({
-        tabId,
-        path: "sidebar/sidebar.html",
-        enabled: true,
-      });
+  .catch((err) => console.error("[TipStream] sidePanel error:", err));
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tab.url && tab.url.includes("rumble.com")) {
+    chrome.sidePanel.setOptions({ tabId, path: "sidebar/sidebar.html", enabled: true });
+  }
+});
+
+// ── Message Router ──
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  handleMessage(msg, sender).then(sendResponse).catch((err) => {
+    console.error("[SW] Error:", err.message);
+    sendResponse({ success: false, error: err.message });
+  });
+  return true;
+});
+
+async function handleMessage(msg, sender) {
+  const { type, data } = msg;
+
+  switch (type) {
+    // ═══ WALLET ═══
+    case "WALLET_INIT": {
+      const info = await initWallet(data.seed);
+      return { success: true, data: info };
     }
-  });
-  
-  // ── Message Router ──
-  
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    handleMessage(msg, sender).then(sendResponse).catch((err) => {
-      console.error("[ServiceWorker] Error:", err.message);
-      sendResponse({ success: false, error: err.message });
-    });
-    return true; // async response
-  });
-  
-  async function handleMessage(msg, sender) {
-    const { type, data } = msg;
-  
-    switch (type) {
-      // ═══ WALLET ═══
-      case "WALLET_INIT":
-        const info = await initWallet(data.seed);
-        return { success: true, data: info };
-  
-      case "WALLET_GENERATE_SEED":
-        return { success: true, data: { seedPhrase: generateSeed() } };
-  
-      case "WALLET_GET":
-        if (!isReady()) return { success: false, error: "Wallet not initialized", needsSetup: true };
-        const balances = await getBalances();
-        return { success: true, data: balances };
-  
-      case "WALLET_SWITCH_CHAIN":
-        const chainResult = await switchChain(data.chain);
-        return { success: true, data: chainResult };
-  
-      // ═══ RUMBLE ═══
-      case "RUMBLE_CONNECT": {
-        const key = data.apiKey;
-        if (!key) return { success: false, error: "API key required" };
-        try {
-          const res = await fetch(`${RUMBLE_API_URL}?key=${key}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const rumbleData = await res.json();
-          await setStore({
-            rumbleApiKey: key,
-            rumbleUsername: rumbleData.username,
-            rumbleConnected: true,
-          });
-          return {
-            success: true,
-            data: {
-              username: rumbleData.username,
-              userId: rumbleData.user_id,
-              followers: rumbleData.followers?.num_followers_total || 0,
-            },
-          };
-        } catch (err) {
-          return { success: false, error: "Invalid Rumble API key" };
+    case "WALLET_GENERATE_SEED": {
+      return { success: true, data: { seedPhrase: generateSeed() } };
+    }
+    case "WALLET_GET": {
+      if (!isReady()) return { success: false, error: "Wallet not initialized", needsSetup: true };
+      return { success: true, data: await getBalances() };
+    }
+    case "WALLET_SWITCH_CHAIN": {
+      return { success: true, data: await switchChain(data.chain) };
+    }
+
+    // ═══ RUMBLE ═══
+    case "RUMBLE_CONNECT": {
+      const key = data.apiKey;
+      if (!key) return { success: false, error: "API key required" };
+      try {
+        const res = await fetch(`${RUMBLE_API_URL}?key=${key}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rd = await res.json();
+        await setStore({ rumbleApiKey: key, rumbleUsername: rd.username, rumbleConnected: true });
+        return { success: true, data: { username: rd.username, userId: rd.user_id, followers: rd.followers?.num_followers_total || 0 } };
+      } catch (err) {
+        return { success: false, error: "Invalid Rumble API key" };
+      }
+    }
+    case "RUMBLE_STATUS": {
+      const st = await getStore();
+      if (!st.rumbleApiKey) return { success: false, error: "Not connected" };
+      try {
+        const res = await fetch(`${RUMBLE_API_URL}?key=${st.rumbleApiKey}`);
+        const rd = await res.json();
+        const ls = rd.livestreams?.find((l) => l.is_live) || null;
+        return { success: true, data: { isLive: !!ls, username: rd.username, followers: rd.followers?.num_followers_total || 0, livestream: ls ? { title: ls.title, watchingNow: ls.watching_now } : null } };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    }
+    case "RUMBLE_DISCONNECT": {
+      await setStore({ rumbleApiKey: "", rumbleUsername: "", rumbleConnected: false });
+      return { success: true };
+    }
+
+    // ═══ CREATORS ═══
+    case "CREATOR_REGISTER": {
+      if (!data.username || !data.address) return { success: false, error: "username and address required" };
+      if (!/^0x[a-fA-F0-9]{40}$/.test(data.address)) return { success: false, error: "Invalid EVM address" };
+      await setCreator(data.username, data.address);
+      return { success: true, data: { username: data.username, address: data.address } };
+    }
+    case "CREATOR_GET_ALL": {
+      return { success: true, data: await getAllCreators() };
+    }
+
+    // ═══ TIPS ═══
+    case "TIP_SEND": {
+      if (!isReady()) return { success: false, error: "Wallet not initialized" };
+      const addr = data.creatorAddress || await getCreator(data.creatorUsername);
+      if (!addr) return { success: false, error: `No address for ${data.creatorUsername}` };
+      const tipAmt = parseFloat(data.amount);
+      const llmCheck = await llmEvaluate({
+        creatorUsername: data.creatorUsername, trigger: "manual", ruleAmount: tipAmt,
+        hypeScore: 0, chatVelocity: 0, keywordHits: [], sentimentScore: 0,
+        watchMinutes: 0, budgetRemaining: 999, budgetMonthly: 999, spentToday: 0, tipHistory: 0,
+      });
+      console.log(`[LLM] Manual tip: ${llmCheck.reasoning} (${llmCheck.mode})`);
+      const tx = await sendTip(addr, tipAmt, data.creatorUsername, "manual");
+      tx.aiMode = llmCheck.mode;
+      tx.aiConfidence = llmCheck.confidence;
+      tx.aiReasoning = llmCheck.reasoning;
+      await addTip(tx);
+      return { success: true, data: tx };
+    }
+    case "TIP_HISTORY": {
+      return { success: true, data: await getTips(data?.limit || 20) };
+    }
+
+    // ═══ BUDGETS ═══
+    case "BUDGET_SAVE": {
+      const existing = await getOrCreateBudget(data.creatorUsername);
+      const updated = { ...existing, ...data };
+      await saveBudget(updated);
+      return { success: true, data: updated };
+    }
+    case "BUDGET_GET_ALL": {
+      return { success: true, data: await getBudgets() };
+    }
+
+    // ═══ POOLS ═══
+    case "POOL_CREATE": {
+      const pool = { id: `pool_${Date.now()}`, name: data.name, creatorUsername: data.creatorUsername, totalFunded: 0, totalDistributed: 0, memberCount: 1, hypeThreshold: data.hypeThreshold || 75, createdAt: Date.now() };
+      await addPool(pool);
+      return { success: true, data: pool };
+    }
+    case "POOL_FUND": {
+      await fundPool(data.poolId, parseFloat(data.amount));
+      return { success: true };
+    }
+    case "POOL_GET_ALL": {
+      return { success: true, data: await getPools() };
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // WATCH_UPDATE — THE KEY AUTONOMOUS HANDLER
+    // Content script sends every 30s: { videoId, creatorName, creatorAddress, watchSeconds }
+    //
+    // WHY WE BYPASS decideTip():
+    // decideTip() calls getCreator() which reads chrome.storage.
+    // But the creator may not be registered yet — the content script
+    // discovered the address via HTMX and is sending it here.
+    // So we do the budget math directly using the address from data.
+    // ═══════════════════════════════════════════════════════
+    case "WATCH_UPDATE": {
+      const store = await getStore();
+      const { videoId, creatorName, creatorAddress, watchSeconds } = data;
+      console.log(`[Agent] WATCH_UPDATE: ${creatorName} | ${watchSeconds}s | addr=${creatorAddress ? creatorAddress.slice(0,10) + "..." : "none"} | vid=${videoId}`);
+
+      // Save watch session
+      const sessions = { ...(store.watchSessions || {}) };
+      sessions[videoId || "current"] = {
+        creator: creatorName,
+        creatorAddress: creatorAddress,
+        watchSeconds: watchSeconds,
+        lastUpdate: Date.now(),
+      };
+      await setKey("watchSessions", sessions);
+
+      // Auto-register creator if address detected from HTMX
+      if (creatorName && creatorAddress && /^0x[a-fA-F0-9]{40}$/.test(creatorAddress)) {
+        const existing = await getCreator(creatorName);
+        if (!existing) {
+          await setCreator(creatorName, creatorAddress);
+          console.log(`[Agent] Auto-registered: ${creatorName} → ${creatorAddress}`);
         }
       }
-  
-      case "RUMBLE_STATUS": {
-        const store = await getStore();
-        if (!store.rumbleApiKey) return { success: false, error: "Not connected" };
-        try {
-          const res = await fetch(`${RUMBLE_API_URL}?key=${store.rumbleApiKey}`);
-          const rumbleData = await res.json();
-          const livestream = rumbleData.livestreams?.find((ls) => ls.is_live) || null;
-          return {
-            success: true,
-            data: {
-              isLive: !!livestream,
-              username: rumbleData.username,
-              followers: rumbleData.followers?.num_followers_total || 0,
-              livestream: livestream ? {
-                title: livestream.title,
-                watchingNow: livestream.watching_now,
-                chatCount: livestream.chat?.length || 0,
-              } : null,
-            },
-          };
-        } catch (err) {
-          return { success: false, error: err.message };
+
+      // ── Pre-checks ──
+      if (!isReady()) {
+        console.log(`[Agent] ✗ wallet_not_ready`);
+        return { success: true, tipped: false, reason: "wallet_not_ready" };
+      }
+      if (!creatorAddress || !/^0x[a-fA-F0-9]{40}$/.test(creatorAddress)) {
+        console.log(`[Agent] ✗ no_creator_address (addr=${creatorAddress})`);
+        return { success: true, tipped: false, reason: "no_creator_address" };
+      }
+      if (watchSeconds < 60) {
+        console.log(`[Agent] ✗ below_min_watch_time (${watchSeconds}s < 60s)`);
+        return { success: true, tipped: false, reason: "below_min_watch_time" };
+      }
+
+      // ── Per-video cooldown — allow re-tipping after cooldown, not permanent block ──
+      const tippedVideos = store.tippedVideos || {};
+      const lastTipForVideo = tippedVideos[videoId] || 0;
+      const settings = await getAgentSettings();
+      const cooldown = settings.cooldownSeconds || 60;
+      const secsSinceVideoTip = lastTipForVideo ? (Date.now() - lastTipForVideo) / 1000 : Infinity;
+      if (lastTipForVideo && secsSinceVideoTip < cooldown) {
+        console.log(`[Agent] ✗ video_cooldown (${Math.ceil(cooldown - secsSinceVideoTip)}s left for ${videoId})`);
+        return { success: true, tipped: false, reason: "video_cooldown" };
+      }
+
+      // ── Direct budget calculation (NO decideTip) ──
+      const watchMinutes = watchSeconds / 60;
+      const tipPerEvent = settings.defaultTipAmount || 0.5;
+      const maxTip = settings.maxTipPerEvent || 5;
+
+      // $0.02 per minute watched SINCE LAST TIP (not total)
+      const lastTipSec = lastTipForVideo ? Math.floor((Date.now() - lastTipForVideo) / 1000) : watchSeconds;
+      const newWatchMinutes = Math.min(lastTipSec, watchSeconds) / 60;
+      let tipAmount = Math.min(tipPerEvent, Math.round(newWatchMinutes * 0.02 * 100) / 100);
+      tipAmount = Math.min(tipAmount, maxTip);
+      if (tipAmount < 0.01) tipAmount = 0.01;
+      console.log(`[Agent] Tip calc: ${newWatchMinutes.toFixed(1)} new min × $0.02 = $${tipAmount}`);
+
+      // Monthly budget
+      const budget = await getOrCreateBudget(creatorName);
+      const remaining = budget.monthlyBudgetUSDT - budget.spentThisMonthUSDT;
+      if (remaining <= 0) {
+        console.log(`[Agent] ✗ monthly_budget_exhausted ($${budget.spentThisMonthUSDT}/$${budget.monthlyBudgetUSDT})`);
+        return { success: true, tipped: false, reason: "monthly_budget_exhausted" };
+      }
+      tipAmount = Math.min(tipAmount, remaining);
+
+      // Cooldown
+      const timeSinceLast = (Date.now() - budget.lastTipAt) / 1000;
+      if (budget.lastTipAt > 0 && timeSinceLast < (budget.cooldownSeconds || 60)) {
+        console.log(`[Agent] ✗ cooldown_active (${Math.ceil(budget.cooldownSeconds - timeSinceLast)}s left)`);
+        return { success: true, tipped: false, reason: "cooldown_active" };
+      }
+
+      console.log(`[Agent] ✓ All gates passed! $${tipAmount} to ${creatorName} (${watchMinutes.toFixed(1)} min, budget: $${remaining.toFixed(2)} left)`);
+
+      // ── LLM evaluation — pass real hype data if available ──
+      const latestHype = await getLatestHype();
+      const llmResult = await llmEvaluate({
+        creatorUsername: creatorName, trigger: "watch_time", ruleAmount: tipAmount,
+        hypeScore: latestHype?.score || 0,
+        chatVelocity: latestHype?.chatVelocity || 0,
+        keywordHits: latestHype?.keywordHits || [],
+        sentimentScore: latestHype?.sentimentScore || 0,
+        watchMinutes: watchMinutes,
+        budgetRemaining: remaining, budgetMonthly: budget.monthlyBudgetUSDT,
+        spentToday: store.dailySpend || 0,
+        tipHistory: (store.tips || []).filter((t) => t.creatorUsername === creatorName && Date.now() - t.timestamp < 86400000).length,
+      });
+
+      if (!llmResult.shouldTip) {
+        console.log(`[Agent] LLM vetoed: ${llmResult.reasoning}`);
+        return { success: true, tipped: false, reason: "llm_veto", llm: llmResult };
+      }
+
+      // ── Execute tip ──
+      const finalAmount = llmResult.adjustedAmount || tipAmount;
+      console.log(`[Agent] ═══ AUTO-TIP: $${finalAmount} to ${creatorName} (${watchMinutes.toFixed(1)} min) ═══`);
+
+      const tx = await sendTip(creatorAddress, finalAmount, creatorName, "watch_time");
+      tx.aiMode = llmResult.mode;
+      tx.aiConfidence = llmResult.confidence;
+      tx.aiReasoning = llmResult.reasoning;
+      await addTip(tx);
+
+      // Mark tipped
+      tippedVideos[videoId] = Date.now();
+      await setKey("tippedVideos", tippedVideos);
+
+      // Notify content script + sidebar
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "TIP_SENT", data: tx });
+      } catch (_) {}
+      chrome.runtime.sendMessage({ type: "TIP_SENT", data: tx }).catch(() => {});
+
+      console.log(`[Agent] ✅ $${finalAmount} → ${creatorName} | ${tx.txHash} | ${llmResult.mode}`);
+      return { success: true, tipped: true, tx };
+    }
+
+    // ═══ VIDEO_ENDED — final chance to tip ═══
+    case "VIDEO_ENDED": {
+      const storeVE = await getStore();
+      const { videoId: veVid, creatorName: veName, creatorAddress: veAddr, totalWatchSeconds: veWatch } = data;
+      const tippedVE = storeVE.tippedVideos || {};
+      if (!tippedVE[veVid] && veAddr && isReady() && veWatch >= 60) {
+        const watchMin = veWatch / 60;
+        const tipAmt = Math.min(0.5, Math.round(watchMin * 0.02 * 100) / 100);
+        if (tipAmt >= 0.01) {
+          const tx = await sendTip(veAddr, tipAmt, veName, "watch_time");
+          tx.aiMode = "rules"; tx.aiConfidence = 1; tx.aiReasoning = "Video ended trigger";
+          await addTip(tx);
+          tippedVE[veVid] = Date.now();
+          await setKey("tippedVideos", tippedVE);
+          try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "TIP_SENT", data: tx });
+          } catch (_) {}
+          console.log(`[Agent] ✅ Video-end tip $${tipAmt} to ${veName}`);
         }
       }
-  
-      case "RUMBLE_DISCONNECT":
-        await setStore({ rumbleApiKey: "", rumbleUsername: "", rumbleConnected: false });
-        return { success: true };
-  
-      // ═══ CREATORS ═══
-      case "CREATOR_REGISTER":
-        if (!data.username || !data.address) return { success: false, error: "username and address required" };
-        if (!/^0x[a-fA-F0-9]{40}$/.test(data.address)) return { success: false, error: "Invalid EVM address" };
-        await setCreator(data.username, data.address);
-        return { success: true, data: { username: data.username, address: data.address } };
-  
-      case "CREATOR_GET_ALL":
-        return { success: true, data: await getAllCreators() };
-  
-      // ═══ TIPS ═══
-      case "TIP_SEND": {
-        if (!isReady()) return { success: false, error: "Wallet not initialized" };
-        const addr = await getCreator(data.creatorUsername);
-        if (!addr) return { success: false, error: `No address for ${data.creatorUsername}` };
-        const tx = await sendTip(addr, parseFloat(data.amount), data.creatorUsername, "manual");
-        await addTip(tx);
-        return { success: true, data: tx };
+      return { success: true };
+    }
+
+    // ═══ CHAT_MESSAGES — Hype analysis (our unique advantage) ═══
+    case "CHAT_MESSAGES": {
+      // Track creator from chat
+      if (data.creator) {
+        const chatStore = await getStore();
+        const chatSessions = { ...(chatStore.watchSessions || {}) };
+        chatSessions["chat"] = { creator: data.creator, lastUpdate: Date.now(), watchSeconds: 0 };
+        await setKey("watchSessions", chatSessions);
       }
-  
-      case "TIP_HISTORY":
-        return { success: true, data: await getTips(data?.limit || 20) };
-  
-      // ═══ BUDGETS ═══
-      case "BUDGET_SAVE": {
-        const existing = await getOrCreateBudget(data.creatorUsername);
-        const updated = { ...existing, ...data };
-        await saveBudget(updated);
-        return { success: true, data: updated };
-      }
-  
-      case "BUDGET_GET_ALL":
-        return { success: true, data: await getBudgets() };
-  
-      // ═══ POOLS ═══
-      case "POOL_CREATE":
-        const pool = {
-          id: `pool_${Date.now()}`,
-          name: data.name,
-          creatorUsername: data.creatorUsername,
-          totalFunded: 0,
-          totalDistributed: 0,
-          memberCount: 1,
-          hypeThreshold: data.hypeThreshold || 75,
-          createdAt: Date.now(),
-        };
-        await addPool(pool);
-        return { success: true, data: pool };
-  
-      case "POOL_FUND":
-        await fundPool(data.poolId, parseFloat(data.amount));
-        return { success: true };
-  
-      case "POOL_GET_ALL":
-        return { success: true, data: await getPools() };
-  
-      // ═══ AGENTS ═══
-      case "AGENT_RUN_CYCLE": {
-        const store = await getStore();
-        const apiKey = store.rumbleApiKey;
-        if (!apiKey) return { success: false, error: "Rumble not connected" };
-  
-        try {
-          const res = await fetch(`${RUMBLE_API_URL}?key=${apiKey}`);
-          const rumbleData = await res.json();
-          const livestream = rumbleData.livestreams?.find((ls) => ls.is_live) || null;
-  
-          if (!livestream) {
-            return { success: true, data: { hype: null, decisions: [], tips: [], milestones: [], message: "No active livestream" } };
-          }
-  
-          // Hype analysis on live chat
-          const messages = (livestream.chat || []).map((m) => ({
-            id: m.id,
-            text: m.text,
-            username: m.username,
-            user_id: m.user_id || m.username,
-            timestamp: m.time || Date.now(),
-          }));
-          const clean = deduplicateSpam(messages);
-          const hype = analyzeHype(clean, 30, store.agentSettings);
-          await addHypeScore(hype);
-  
-          const results = { hype, decisions: [], tips: [], milestones: [] };
-          const creatorUsername = rumbleData.username;
-  
-          // If hype spike, try to tip
-          if (hype.isSpike && isReady()) {
-            const decision = await decideTip(creatorUsername, "hype_spike", hype);
-            results.decisions.push(decision);
-  
-            if (decision.shouldTip) {
-              const addr = await getCreator(creatorUsername);
-              if (addr) {
-                const tx = await sendTip(addr, decision.amount, creatorUsername, "hype_spike");
-                await addTip(tx);
-                results.tips.push(tx);
+      if (data.messages && data.messages.length > 0) {
+        const chatStoreData = await getStore();
+        const clean = deduplicateSpam(data.messages);
+        const hype = analyzeHype(clean, 30, chatStoreData.agentSettings);
+        await addHypeScore(hype);
+        chrome.runtime.sendMessage({ type: "HYPE_UPDATE", data: hype }).catch(() => {});
+
+        // If hype spike detected, try to auto-tip immediately
+        if (hype.isSpike && isReady() && data.creator) {
+          const creatorAddr = await getCreator(data.creator);
+          if (creatorAddr) {
+            const store = await getStore();
+            const tippedVideos = store.tippedVideos || {};
+            // 5-minute window key to avoid spamming
+            const hypeKey = `hype_${data.creator}_${Math.floor(Date.now() / 300000)}`;
+            if (!tippedVideos[hypeKey]) {
+              const budget = await getOrCreateBudget(data.creator);
+              const remaining = budget.monthlyBudgetUSDT - budget.spentThisMonthUSDT;
+              if (remaining > 0) {
+                const tipAmt = Math.min(budget.tipPerEvent || 0.5, remaining);
+                const llm = await llmEvaluate({
+                  creatorUsername: data.creator, trigger: "hype_spike", ruleAmount: tipAmt,
+                  hypeScore: hype.score, chatVelocity: hype.chatVelocity,
+                  keywordHits: hype.keywordHits, sentimentScore: hype.sentimentScore,
+                  watchMinutes: 0, budgetRemaining: remaining,
+                  budgetMonthly: budget.monthlyBudgetUSDT,
+                  spentToday: store.dailySpend || 0,
+                  tipHistory: (store.tips || []).filter((t) => t.creatorUsername === data.creator && Date.now() - t.timestamp < 86400000).length,
+                });
+                if (llm.shouldTip) {
+                  const amt = llm.adjustedAmount || tipAmt;
+                  const tx = await sendTip(creatorAddr, amt, data.creator, "hype_spike");
+                  tx.aiMode = llm.mode; tx.aiConfidence = llm.confidence; tx.aiReasoning = llm.reasoning;
+                  await addTip(tx);
+                  tippedVideos[hypeKey] = Date.now();
+                  await setKey("tippedVideos", tippedVideos);
+                  chrome.runtime.sendMessage({ type: "TIP_SENT", data: tx }).catch(() => {});
+                  try {
+                    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                    if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "TIP_SENT", data: tx });
+                  } catch (_) {}
+                  console.log(`[Agent] ✅ Hype-tip $${amt} to ${data.creator} (score: ${hype.score})`);
+                }
               }
             }
           }
-  
-          return { success: true, data: results };
-        } catch (err) {
-          return { success: false, error: err.message };
         }
+        return { success: true, data: hype };
       }
-  
-      case "AGENT_TOGGLE_AUTO":
-        const store2 = await getStore();
-        const newState = !store2.autoTipEnabled;
-        await setKey("autoTipEnabled", newState);
-        return { success: true, data: { autoTipEnabled: newState } };
-  
-      case "AGENT_SETTINGS_SAVE":
-        await saveAgentSettings(data);
-        return { success: true, data: await getAgentSettings() };
-  
-      case "AGENT_SETTINGS_GET":
-        return { success: true, data: await getAgentSettings() };
-  
-      // ═══ HYPE ═══
-      case "HYPE_GET":
-        return { success: true, data: { current: await getLatestHype(), history: await getHypeHistory(20) } };
-  
-      // ═══ DASHBOARD ═══
-      case "DASHBOARD_GET":
-        return { success: true, data: await getDashboard() };
-  
-      // ═══ CONTENT SCRIPT MESSAGES ═══
-      case "WATCH_UPDATE": {
-        // Content script reporting watch time
-        const store3 = await getStore();
-        const sessions = { ...(store3.watchSessions || {}) };
-        sessions[data.tabId] = {
-          creator: data.creator,
-          watchSeconds: data.watchSeconds,
-          url: data.url,
-          lastUpdate: Date.now(),
+      return { success: true };
+    }
+
+    // ═══ CREATOR_DETECTED (from content script HTMX extraction) ═══
+    case "CREATOR_DETECTED": {
+      if (data.creatorName && data.creatorAddress && /^0x[a-fA-F0-9]{40}$/.test(data.creatorAddress)) {
+        await setCreator(data.creatorName, data.creatorAddress);
+        console.log(`[TipStream] Creator: ${data.creatorName} → ${data.creatorAddress}`);
+      }
+      // Also accept old format for backwards compat
+      if (data.username && data.address && /^0x[a-fA-F0-9]{40}$/.test(data.address)) {
+        await setCreator(data.username, data.address);
+        console.log(`[TipStream] Creator: ${data.username} → ${data.address}`);
+      }
+      if (data.creatorName || data.username) {
+        const csStore = await getStore();
+        const csSessions = { ...(csStore.watchSessions || {}) };
+        csSessions["detected"] = {
+          creator: data.creatorName || data.username,
+          creatorAddress: data.creatorAddress || data.address || null,
+          lastUpdate: Date.now(), watchSeconds: 0,
         };
-        await setStore({ watchSessions: sessions });
-  
-        // Check if watch time trigger should fire
-        const settings = await getAgentSettings();
-        if (data.watchSeconds >= 60 && isReady()) { // Min 1 minute
-          const decision = await decideTip(data.creator, "watch_time", null, {
-            watchTimeMinutes: Math.floor(data.watchSeconds / 60),
-          });
-          if (decision.shouldTip) {
-            const addr = await getCreator(data.creator);
-            if (addr) {
-              const tx = await sendTip(addr, decision.amount, data.creator, "watch_time");
-              await addTip(tx);
-              // Notify sidebar
-              chrome.runtime.sendMessage({ type: "TIP_SENT", data: tx }).catch(() => {});
-            }
-          }
-        }
-        return { success: true };
+        await setKey("watchSessions", csSessions);
       }
-  
-      case "CREATOR_DETECTED": {
-        // Content script found a creator wallet address on page
-        if (data.username && data.address) {
-          await setCreator(data.username, data.address);
-          console.log(`[TipStream] Auto-detected creator: ${data.username} → ${data.address}`);
-        }
-        return { success: true };
-      }
-  
-      case "CHAT_MESSAGES": {
-        // Content script scraped live chat messages
-        if (data.messages && data.messages.length > 0) {
-          const storeData = await getStore();
-          const clean = deduplicateSpam(data.messages);
-          const hype = analyzeHype(clean, 30, storeData.agentSettings);
-          await addHypeScore(hype);
-          // Notify sidebar of hype update
-          chrome.runtime.sendMessage({ type: "HYPE_UPDATE", data: hype }).catch(() => {});
-          return { success: true, data: hype };
-        }
-        return { success: true };
-      }
-  
-      default:
-        return { success: false, error: `Unknown message type: ${type}` };
+      return { success: true };
     }
-  }
-  
-  // ── Auto-tip interval ──
-  
-  let autoTipInterval = null;
-  
-  async function checkAutoTip() {
-    const store = await getStore();
-    if (!store.autoTipEnabled || !store.rumbleApiKey) return;
-  
-    chrome.runtime.sendMessage({ type: "AGENT_RUN_CYCLE", data: {} }).catch(() => {});
-  }
-  
-  // Listen for auto-tip toggle
-  chrome.storage.onChanged.addListener((changes) => {
-    if (changes.autoTipEnabled) {
-      if (changes.autoTipEnabled.newValue) {
-        console.log("[TipStream] Auto-tip ON — polling every 5s");
-        autoTipInterval = setInterval(checkAutoTip, 5000);
+
+    // ═══ MANUAL AGENT CYCLE (sidebar "Run Agent Cycle" button) ═══
+    case "AGENT_RUN_CYCLE": {
+      const store = await getStore();
+      const results = { hype: null, decisions: [], tips: [], llm: null, message: "", targetCreator: null };
+
+      // Find current creator from watch sessions
+      const sessions = store.watchSessions || {};
+      let targetCreator = null;
+      let targetAddress = null;
+      let watchSecs = 0;
+
+      for (const [key, session] of Object.entries(sessions)) {
+        if (session.creator && Date.now() - session.lastUpdate < 120000) {
+          targetCreator = session.creator;
+          targetAddress = session.creatorAddress || await getCreator(session.creator);
+          watchSecs = session.watchSeconds || 0;
+          break;
+        }
+      }
+
+      // Get hype data
+      const storedHype = await getLatestHype();
+      if (storedHype && Date.now() - storedHype.timestamp < 60000) {
+        results.hype = storedHype;
+      }
+
+      if (!results.hype) {
+        results.message = "No chat data — open a Rumble livestream and wait for chat";
+        results.targetCreator = targetCreator;
+        return { success: true, data: results };
+      }
+
+      results.targetCreator = targetCreator;
+
+      if (!targetCreator) {
+        results.message = `Hype: ${results.hype.score}/100 but no creator detected`;
+        return { success: true, data: results };
+      }
+
+      results.message = `${targetCreator} (${Math.floor(watchSecs / 60)}m)`;
+      const threshold = store.agentSettings?.hypeThreshold || 70;
+
+      if (results.hype.isSpike && isReady() && targetAddress) {
+        const budget = await getOrCreateBudget(targetCreator);
+        const remaining = budget.monthlyBudgetUSDT - budget.spentThisMonthUSDT;
+        const tipAmt = Math.min(budget.tipPerEvent || 0.5, remaining);
+
+        if (remaining <= 0) {
+          results.message = `${targetCreator} — monthly budget exhausted`;
+          return { success: true, data: results };
+        }
+
+        const recentTips = (store.tips || []).filter(
+          (t) => t.creatorUsername === targetCreator && Date.now() - t.timestamp < 86400000
+        ).length;
+
+        const llmResult = await llmEvaluate({
+          creatorUsername: targetCreator, trigger: "hype_spike", ruleAmount: tipAmt,
+          hypeScore: results.hype.score, chatVelocity: results.hype.chatVelocity,
+          keywordHits: results.hype.keywordHits, sentimentScore: results.hype.sentimentScore,
+          watchMinutes: Math.floor(watchSecs / 60),
+          budgetRemaining: remaining, budgetMonthly: budget.monthlyBudgetUSDT,
+          spentToday: store.dailySpend || 0, tipHistory: recentTips,
+        });
+        results.llm = llmResult;
+
+        if (llmResult.shouldTip) {
+          const amt = llmResult.adjustedAmount || tipAmt;
+          const tx = await sendTip(targetAddress, amt, targetCreator, "hype_spike");
+          tx.aiMode = llmResult.mode; tx.aiConfidence = llmResult.confidence; tx.aiReasoning = llmResult.reasoning;
+          await addTip(tx);
+          results.tips.push(tx);
+          results.message = `Tipped $${amt} to ${targetCreator} (${llmResult.mode})`;
+        } else {
+          results.message = `LLM vetoed: ${llmResult.reasoning}`;
+        }
+      } else if (!targetAddress) {
+        results.message = `${targetCreator} — no wallet. Register in TIP tab.`;
       } else {
-        console.log("[TipStream] Auto-tip OFF");
-        if (autoTipInterval) clearInterval(autoTipInterval);
-        autoTipInterval = null;
+        results.message = `${targetCreator} — Hype ${results.hype.score}/${threshold} (monitoring)`;
       }
+
+      return { success: true, data: results };
     }
+
+    // ═══ AGENT SETTINGS ═══
+    case "AGENT_TOGGLE_AUTO": {
+      const storeAT = await getStore();
+      const newState = !storeAT.autoTipEnabled;
+      await setKey("autoTipEnabled", newState);
+      return { success: true, data: { autoTipEnabled: newState } };
+    }
+    case "AGENT_SETTINGS_SAVE": {
+      await saveAgentSettings(data);
+      return { success: true, data: await getAgentSettings() };
+    }
+    case "AGENT_SETTINGS_GET": {
+      return { success: true, data: await getAgentSettings() };
+    }
+
+    // ═══ OPENAI KEY ═══
+    case "OPENAI_KEY_SAVE": {
+      await setKey("openaiApiKey", data.apiKey || "");
+      return { success: true, data: { saved: true, llmEnabled: !!(data.apiKey) } };
+    }
+    case "OPENAI_KEY_GET": {
+      const oaKey = await getKey("openaiApiKey");
+      return { success: true, data: { hasKey: !!oaKey, llmEnabled: !!oaKey } };
+    }
+
+    // ═══ HYPE / DASHBOARD ═══
+    case "HYPE_GET": {
+      return { success: true, data: { current: await getLatestHype(), history: await getHypeHistory(20) } };
+    }
+    case "DASHBOARD_GET": {
+      return { success: true, data: await getDashboard() };
+    }
+
+    // ═══ CONTENT LOG RELAY ═══
+    case "CONTENT_LOG": {
+      console.log(data.message);
+      return { success: true };
+    }
+
+    default:
+      return { success: false, error: `Unknown message type: ${type}` };
+  }
+}
+
+// ── Daily spending reset alarm ──
+try {
+  chrome.alarms.create("resetDailySpending", {
+    when: getNextMidnight(),
+    periodInMinutes: 24 * 60,
   });
+} catch (_) {}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "resetDailySpending") {
+    setKey("dailySpend", 0);
+    setKey("tippedVideos", {});
+    console.log("[TipStream] Daily reset");
+  }
+});
+
+function getNextMidnight() {
+  const now = new Date();
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  return midnight.getTime();
+}
+
+// ── Auto-tip interval (listens for toggle) ──
+let autoTipInterval = null;
+
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.autoTipEnabled) {
+    if (changes.autoTipEnabled.newValue) {
+      console.log("[TipStream] Auto-tip ON");
+      // Auto-tip is primarily driven by WATCH_UPDATE from content script
+      // This interval is a fallback for Rumble API polling
+      autoTipInterval = setInterval(async () => {
+        const store = await getStore();
+        if (!store.autoTipEnabled || !store.rumbleApiKey) return;
+        try {
+          const res = await fetch(`${RUMBLE_API_URL}?key=${store.rumbleApiKey}`);
+          const rd = await res.json();
+          const ls = rd.livestreams?.find((l) => l.is_live);
+          if (ls && ls.chat && ls.chat.length > 0) {
+            const messages = ls.chat.map((m) => ({
+              id: m.id, text: m.text, username: m.username,
+              user_id: m.user_id || m.username, timestamp: m.time || Date.now(),
+            }));
+            const clean = deduplicateSpam(messages);
+            const hype = analyzeHype(clean, 30, store.agentSettings);
+            await addHypeScore(hype);
+            chrome.runtime.sendMessage({ type: "HYPE_UPDATE", data: hype }).catch(() => {});
+          }
+        } catch (_) {}
+      }, 10000);
+    } else {
+      console.log("[TipStream] Auto-tip OFF");
+      if (autoTipInterval) clearInterval(autoTipInterval);
+      autoTipInterval = null;
+    }
+  }
+});
