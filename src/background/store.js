@@ -40,6 +40,12 @@ const DEFAULT_STORE = {
   // Watch sessions
   watchSessions: {},  // { tabId: { creator, startTime, watchSeconds, ... } }
 
+  // Per-video dedup
+  tippedVideos: {},   // { videoId: timestamp }
+
+  // OpenAI
+  openaiApiKey: "",
+
   // Stats
   dailySpend: 0,
   dailySpendDate: new Date().toISOString().slice(0, 10),
