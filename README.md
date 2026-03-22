@@ -6,6 +6,8 @@
 **Demo Video:** [YouTube](https://youtu.be/4iJJDH2PUEk)  
 **OpenClaw Skill:** [`openclaw-skill/`](./skill/SKILL.md)
 
+<img width="1353" height="784" alt="image" src="https://github.com/user-attachments/assets/d866ea10-e559-4bf2-aa8e-ee39a3bac08a" />
+
 ---
 
 ## Feature Summary
@@ -36,6 +38,8 @@
 ---
 
 ## How It Works
+
+<img width="404" height="324" alt="image" src="https://github.com/user-attachments/assets/28b8ba0b-8ebc-4f86-8fa0-d031291d5037" />
 
 ```
 You watch a Rumble video
