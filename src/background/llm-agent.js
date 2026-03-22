@@ -51,6 +51,12 @@ HYPE_SPIKE triggers:
 - hypeScore >= 70 with positive sentiment = high confidence (0.8+)
 - hypeScore < 50 = reject
 
+VIEWER_SPIKE triggers:
+- These reward creators for growing their audience IN REAL TIME
+- A viewer spike means live viewers jumped 50%+ — this is exciting and tip-worthy
+- If budget allows, APPROVE with confidence >= 0.8
+- Larger spikes (200%+) deserve higher amounts
+
 MANUAL triggers:
 - Always approve — the user explicitly chose to tip. Confidence 1.0.
 

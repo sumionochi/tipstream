@@ -163,6 +163,12 @@ async function init() {
       showMsg("ok", `🎉 ${ml.username} hit ${ml.value} ${ml.type}s!`);
       refreshDashboard();
     }
+    if (m.type === "VIEWER_SPIKE") {
+      const vs = m.data;
+      addLog(`📈 VIEWER SPIKE! ${vs.from}→${vs.to} (+${vs.pct}%) — tipped $${vs.tx?.amount || "?"}`, "hype");
+      showMsg("ok", `📈 ${vs.username} viewer spike! ${vs.from}→${vs.to} (+${vs.pct}%)`);
+      refreshDashboard();
+    }
   });
 
   // Check OpenAI key status
@@ -741,7 +747,9 @@ async function refreshHistory() {
     const icon = t.triggerReason === "hype_spike" ? "🔥" :
                  t.triggerReason === "manual" ? "👆" :
                  t.triggerReason === "watch_time" ? "⏱" :
-                 t.triggerReason === "milestone_follower" ? "🎉" : "💰";
+                 t.triggerReason === "milestone_follower" ? "🎉" :
+                 t.triggerReason === "milestone_subscriber" ? "🎉" :
+                 t.triggerReason === "viewer_spike" ? "📈" : "💰";
     const statusText = t.status === "confirmed" ? "✓" : "✗";
     const statusColor = t.status === "confirmed" ? "var(--accent)" : "var(--red)";
     const txLink = t.txHash ? `<a href="${txUrl(t.txHash, t.chain || currentChain)}" target="_blank" class="tip-tx">${shortAddr(t.txHash)} ↗</a>` : "";

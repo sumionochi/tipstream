@@ -12,14 +12,15 @@ Rumble Page → Content Script (video tracking, chat scraping, wallet detection)
 
 ## Trigger Types
 
-| Trigger                | How it fires                                                               | Default behavior                      |
-| ---------------------- | -------------------------------------------------------------------------- | ------------------------------------- |
-| `watch_time`           | Every 30s while watching video, tips after cooldown                        | $0.02/min, cooldown-gated             |
-| `hype_spike`           | Chat hype score ≥ threshold (NLP: velocity + keywords + emoji + sentiment) | Tip amount scales with hype intensity |
-| `milestone_follower`   | Follower count crosses 10/25/50/100/250/500/1K/5K/10K/25K/50K/100K         | 2× normal tip                         |
-| `milestone_subscriber` | Subscriber count crosses same thresholds                                   | 3× normal tip                         |
-| `manual`               | User clicks "Send Tip" in sidebar                                          | User-specified amount                 |
-| `community_pool`       | Pool balance + hype spike on target creator                                | Pool distributes to creator           |
+| Trigger                | How it fires                                                               | Default behavior                          |
+| ---------------------- | -------------------------------------------------------------------------- | ----------------------------------------- |
+| `watch_time`           | Every 30s while watching video, tips after cooldown                        | $0.02/min, cooldown-gated                 |
+| `hype_spike`           | Chat hype score ≥ threshold (NLP: velocity + keywords + emoji + sentiment) | Tip amount scales with hype intensity     |
+| `viewer_spike`         | Live viewer count jumps ≥50% with ≥10 new viewers                          | 1.5-2.5× tip scaling with spike magnitude |
+| `milestone_follower`   | Follower count crosses 10/25/50/100/250/500/1K/5K/10K/25K/50K/100K         | 2× normal tip                             |
+| `milestone_subscriber` | Subscriber count crosses same thresholds                                   | 3× normal tip                             |
+| `manual`               | User clicks "Send Tip" in sidebar                                          | User-specified amount                     |
+| `community_pool`       | Pool balance + hype spike on target creator                                | Pool distributes to creator               |
 
 ## Available Commands
 

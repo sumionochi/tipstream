@@ -717,11 +717,81 @@ async function checkMilestones() {
     const currentSubs = rd.subscribers?.num_subscribers || 0;
     const username = rd.username;
 
+    // Get livestream viewer count
+    const livestream = rd.livestreams?.find((l) => l.is_live) || null;
+    const currentViewers = livestream?.watching_now || 0;
+
     const milestoneState = await getMilestoneState();
     const prevFollowers = milestoneState.followers || 0;
     const prevSubs = milestoneState.subscribers || 0;
+    const prevViewers = milestoneState.viewers || 0;
+    const lastSpikeAt = milestoneState.lastSpikeAt || 0;
 
-    const results = { milestones: [], followers: currentFollowers, subs: currentSubs };
+    const results = { milestones: [], followers: currentFollowers, subs: currentSubs, viewers: currentViewers };
+
+    // ── Viewer Spike Detection ──
+    // A "spike" is when viewers jump by ≥50% AND at least 10 new viewers
+    // (prevents noise from small streams: 2→3 viewers = 50% but not meaningful)
+    if (prevViewers > 0 && currentViewers > 0 && livestream) {
+      const increase = currentViewers - prevViewers;
+      const pctIncrease = (increase / prevViewers) * 100;
+      const spikeCooldown = 300000; // 5 min between spike tips
+
+      if (increase >= 10 && pctIncrease >= 50 && (Date.now() - lastSpikeAt) > spikeCooldown) {
+        console.log(`[Spike] 📈 ${username}: ${prevViewers} → ${currentViewers} viewers (+${pctIncrease.toFixed(0)}%)`);
+        results.milestones.push({ type: "viewer_spike", value: currentViewers, previousValue: prevViewers, pctIncrease: Math.round(pctIncrease), username });
+
+        // Auto-tip on viewer spike
+        if (isReady() && username) {
+          const addr = await getCreator(username);
+          if (addr) {
+            const budget = await getOrCreateBudget(username);
+            const remaining = budget.monthlyBudgetUSDT - budget.spentThisMonthUSDT;
+            // Tip scales with spike magnitude: 1.5× for 50-100%, 2× for 100-200%, 2.5× for 200%+
+            const spikeMult = pctIncrease >= 200 ? 2.5 : pctIncrease >= 100 ? 2 : 1.5;
+            const tipAmt = Math.min(Math.round(budget.tipPerEvent * spikeMult * 100) / 100, remaining);
+            if (tipAmt >= 0.01) {
+              const llm = await llmEvaluate({
+                creatorUsername: username, trigger: "viewer_spike", ruleAmount: tipAmt,
+                hypeScore: 0, chatVelocity: 0, keywordHits: [], sentimentScore: 0,
+                watchMinutes: 0, budgetRemaining: remaining,
+                budgetMonthly: budget.monthlyBudgetUSDT,
+                spentToday: store.dailySpend || 0,
+                tipHistory: (store.tips || []).filter((t) => t.creatorUsername === username && Date.now() - t.timestamp < 86400000).length,
+              });
+              if (llm.shouldTip) {
+                const amt = llm.adjustedAmount || tipAmt;
+                const tx = await sendTip(addr, amt, username, "viewer_spike");
+                tx.aiMode = llm.mode; tx.aiConfidence = llm.confidence;
+                tx.aiReasoning = `Viewer spike: ${prevViewers}→${currentViewers} (+${Math.round(pctIncrease)}%)`;
+                tx.viewerSpike = { from: prevViewers, to: currentViewers, pct: Math.round(pctIncrease) };
+                await addTip(tx);
+                chrome.runtime.sendMessage({ type: "TIP_SENT", data: tx }).catch(() => {});
+                chrome.runtime.sendMessage({
+                  type: "VIEWER_SPIKE",
+                  data: { from: prevViewers, to: currentViewers, pct: Math.round(pctIncrease), username, tx },
+                }).catch(() => {});
+                console.log(`[Spike] ✅ Tipped $${amt} for viewer spike (${prevViewers}→${currentViewers})`);
+                // Update spike timestamp
+                milestoneState.lastSpikeAt = Date.now();
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ── Viewer Milestone Detection ──
+    // Also check if viewer count crosses round milestones (100, 500, 1000, etc.)
+    const viewerMilestone = findCrossedMilestone(prevViewers, currentViewers);
+    if (viewerMilestone && livestream) {
+      console.log(`[Milestone] 👁️ ${username} hit ${viewerMilestone} concurrent viewers!`);
+      results.milestones.push({ type: "viewer_milestone", value: viewerMilestone, username });
+      chrome.runtime.sendMessage({
+        type: "MILESTONE_HIT",
+        data: { type: "viewer", value: viewerMilestone, username },
+      }).catch(() => {});
+    }
 
     // Check follower milestone
     const followerMilestone = findCrossedMilestone(prevFollowers, currentFollowers);
@@ -779,7 +849,11 @@ async function checkMilestones() {
     }
 
     // Save current state
-    await setMilestoneState({ followers: currentFollowers, subscribers: currentSubs, lastCheck: Date.now() });
+    await setMilestoneState({
+      followers: currentFollowers, subscribers: currentSubs,
+      viewers: currentViewers, lastSpikeAt: milestoneState.lastSpikeAt || lastSpikeAt,
+      lastCheck: Date.now(),
+    });
     return results;
   } catch (err) {
     console.warn("[Milestone] Check failed:", err.message);

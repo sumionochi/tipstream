@@ -14,12 +14,14 @@
   "capabilities": [
     "watch_time_tipping",
     "hype_spike_tipping",
+    "viewer_spike_tipping",
     "milestone_tipping",
     "manual_tipping",
     "smart_splits",
     "community_pools",
     "llm_reasoning",
     "budget_management",
-    "multi_chain"
+    "multi_chain",
+    "btc_tipping"
   ]
 }
