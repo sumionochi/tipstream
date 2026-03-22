@@ -7,16 +7,18 @@
 
 import {
   initWallet, restoreWallet, isReady, getBalances,
-  sendTip, switchChain, generateSeed, getAddress,
+  sendTip, sendSplitTip, switchChain, generateSeed, getAddress,
 } from "./wallet.js";
 import {
   getStore, setStore, setKey, getKey,
   addTip, getTips, getDashboard,
-  setCreator, getCreator, getAllCreators,
+  setCreator, getCreator, getCreatorFull, getAllCreators, getAllCreatorsFull,
+  getSplits, setSplits,
   getOrCreateBudget, saveBudget, getBudgets,
   addPool, getPools, fundPool,
   addHypeScore, getLatestHype, getHypeHistory,
   getAgentSettings, saveAgentSettings,
+  getMilestoneState, setMilestoneState,
 } from "./store.js";
 import { analyzeHype, deduplicateSpam } from "./hype-agent.js";
 import { RUMBLE_API_URL } from "./config.js";
@@ -114,6 +116,26 @@ async function handleMessage(msg, sender) {
     case "CREATOR_GET_ALL": {
       return { success: true, data: await getAllCreators() };
     }
+    case "CREATOR_GET_FULL": {
+      return { success: true, data: await getAllCreatorsFull() };
+    }
+
+    // ═══ SPLITS ═══
+    case "SPLITS_SAVE": {
+      if (!data.username) return { success: false, error: "username required" };
+      await setSplits(data.username, data.splits || []);
+      console.log(`[Splits] Saved ${(data.splits || []).length} splits for ${data.username}`);
+      return { success: true };
+    }
+    case "SPLITS_GET": {
+      return { success: true, data: await getSplits(data.username) };
+    }
+
+    // ═══ MILESTONES ═══
+    case "MILESTONE_CHECK": {
+      const milestoneResult = await checkMilestones();
+      return { success: true, data: milestoneResult };
+    }
 
     // ═══ TIPS ═══
     case "TIP_SEND": {
@@ -127,6 +149,21 @@ async function handleMessage(msg, sender) {
         watchMinutes: 0, budgetRemaining: 999, budgetMonthly: 999, spentToday: 0, tipHistory: 0,
       });
       console.log(`[LLM] Manual tip: ${llmCheck.reasoning} (${llmCheck.mode})`);
+
+      // Check for splits
+      const splits = await getSplits(data.creatorUsername);
+      if (splits && splits.length > 0) {
+        const txResults = await sendSplitTip(addr, splits, tipAmt, data.creatorUsername, "manual");
+        for (const tx of txResults) {
+          tx.aiMode = llmCheck.mode;
+          tx.aiConfidence = llmCheck.confidence;
+          tx.aiReasoning = llmCheck.reasoning;
+          await addTip(tx);
+        }
+        chrome.runtime.sendMessage({ type: "TIP_SENT", data: txResults[0] }).catch(() => {});
+        return { success: true, data: txResults[0], splits: txResults };
+      }
+
       const tx = await sendTip(addr, tipAmt, data.creatorUsername, "manual");
       tx.aiMode = llmCheck.mode;
       tx.aiConfidence = llmCheck.confidence;
@@ -272,15 +309,29 @@ async function handleMessage(msg, sender) {
         return { success: true, tipped: false, reason: "llm_veto", llm: llmResult };
       }
 
-      // ── Execute tip ──
+      // ── Execute tip (with splits if configured) ──
       const finalAmount = llmResult.adjustedAmount || tipAmount;
       console.log(`[Agent] ═══ AUTO-TIP: $${finalAmount} to ${creatorName} (${watchMinutes.toFixed(1)} min) ═══`);
 
-      const tx = await sendTip(creatorAddress, finalAmount, creatorName, "watch_time");
-      tx.aiMode = llmResult.mode;
-      tx.aiConfidence = llmResult.confidence;
-      tx.aiReasoning = llmResult.reasoning;
-      await addTip(tx);
+      const splits = await getSplits(creatorName);
+      let tx;
+      if (splits && splits.length > 0) {
+        const txResults = await sendSplitTip(creatorAddress, splits, finalAmount, creatorName, "watch_time");
+        tx = txResults[0]; // Primary creator tx
+        for (const t of txResults) {
+          t.aiMode = llmResult.mode;
+          t.aiConfidence = llmResult.confidence;
+          t.aiReasoning = llmResult.reasoning;
+          await addTip(t);
+        }
+        console.log(`[Agent] Split tip: ${txResults.length} transfers ($${finalAmount} total)`);
+      } else {
+        tx = await sendTip(creatorAddress, finalAmount, creatorName, "watch_time");
+        tx.aiMode = llmResult.mode;
+        tx.aiConfidence = llmResult.confidence;
+        tx.aiReasoning = llmResult.reasoning;
+        await addTip(tx);
+      }
 
       // Mark tipped
       tippedVideos[videoId] = Date.now();
@@ -591,5 +642,117 @@ chrome.storage.onChanged.addListener((changes) => {
       if (autoTipInterval) clearInterval(autoTipInterval);
       autoTipInterval = null;
     }
+  }
+});
+
+// ═══════════════════════════════════════════
+// MILESTONE DETECTION
+// Polls Rumble API, compares follower/subscriber
+// counts to stored state, fires bonus tips on milestones
+// ═══════════════════════════════════════════
+
+const MILESTONE_THRESHOLDS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000];
+
+function findCrossedMilestone(prev, current) {
+  for (let i = MILESTONE_THRESHOLDS.length - 1; i >= 0; i--) {
+    const t = MILESTONE_THRESHOLDS[i];
+    if (current >= t && prev < t) return t;
+  }
+  return null;
+}
+
+async function checkMilestones() {
+  const store = await getStore();
+  if (!store.rumbleApiKey) return { checked: false, reason: "no_api_key" };
+
+  try {
+    const res = await fetch(`${RUMBLE_API_URL}?key=${store.rumbleApiKey}`);
+    const rd = await res.json();
+    const currentFollowers = rd.followers?.num_followers_total || 0;
+    const currentSubs = rd.subscribers?.num_subscribers || 0;
+    const username = rd.username;
+
+    const milestoneState = await getMilestoneState();
+    const prevFollowers = milestoneState.followers || 0;
+    const prevSubs = milestoneState.subscribers || 0;
+
+    const results = { milestones: [], followers: currentFollowers, subs: currentSubs };
+
+    // Check follower milestone
+    const followerMilestone = findCrossedMilestone(prevFollowers, currentFollowers);
+    if (followerMilestone) {
+      console.log(`[Milestone] 🎉 ${username} hit ${followerMilestone} followers!`);
+      results.milestones.push({ type: "follower", value: followerMilestone, username });
+
+      // Auto-tip if wallet ready and creator registered
+      if (isReady() && username) {
+        const addr = await getCreator(username);
+        if (addr) {
+          const budget = await getOrCreateBudget(username);
+          const remaining = budget.monthlyBudgetUSDT - budget.spentThisMonthUSDT;
+          const tipAmt = Math.min(budget.tipPerEvent * 2, remaining); // Double tip for milestones
+          if (tipAmt >= 0.01) {
+            const tx = await sendTip(addr, tipAmt, username, "milestone_follower");
+            tx.aiMode = "rules";
+            tx.aiConfidence = 1;
+            tx.aiReasoning = `Follower milestone: ${followerMilestone} reached!`;
+            tx.milestoneValue = followerMilestone;
+            await addTip(tx);
+            chrome.runtime.sendMessage({ type: "TIP_SENT", data: tx }).catch(() => {});
+            chrome.runtime.sendMessage({ type: "MILESTONE_HIT", data: { type: "follower", value: followerMilestone, username, tx } }).catch(() => {});
+            console.log(`[Milestone] ✅ Tipped $${tipAmt} for ${followerMilestone} followers`);
+          }
+        }
+      }
+    }
+
+    // Check subscriber milestone
+    const subMilestone = findCrossedMilestone(prevSubs, currentSubs);
+    if (subMilestone) {
+      console.log(`[Milestone] 🎉 ${username} hit ${subMilestone} subscribers!`);
+      results.milestones.push({ type: "subscriber", value: subMilestone, username });
+
+      if (isReady() && username) {
+        const addr = await getCreator(username);
+        if (addr) {
+          const budget = await getOrCreateBudget(username);
+          const remaining = budget.monthlyBudgetUSDT - budget.spentThisMonthUSDT;
+          const tipAmt = Math.min(budget.tipPerEvent * 3, remaining); // Triple tip for sub milestones
+          if (tipAmt >= 0.01) {
+            const tx = await sendTip(addr, tipAmt, username, "milestone_subscriber");
+            tx.aiMode = "rules";
+            tx.aiConfidence = 1;
+            tx.aiReasoning = `Subscriber milestone: ${subMilestone} reached!`;
+            tx.milestoneValue = subMilestone;
+            await addTip(tx);
+            chrome.runtime.sendMessage({ type: "TIP_SENT", data: tx }).catch(() => {});
+            chrome.runtime.sendMessage({ type: "MILESTONE_HIT", data: { type: "subscriber", value: subMilestone, username, tx } }).catch(() => {});
+            console.log(`[Milestone] ✅ Tipped $${tipAmt} for ${subMilestone} subscribers`);
+          }
+        }
+      }
+    }
+
+    // Save current state
+    await setMilestoneState({ followers: currentFollowers, subscribers: currentSubs, lastCheck: Date.now() });
+    return results;
+  } catch (err) {
+    console.warn("[Milestone] Check failed:", err.message);
+    return { checked: false, reason: err.message };
+  }
+}
+
+// Milestone check alarm — every 60 seconds when auto-tip is on
+try {
+  chrome.alarms.create("milestoneCheck", { periodInMinutes: 1 });
+} catch (_) {}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "milestoneCheck") {
+    getStore().then((store) => {
+      if (store.autoTipEnabled && store.rumbleApiKey) {
+        checkMilestones();
+      }
+    });
   }
 });

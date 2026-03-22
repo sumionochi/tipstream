@@ -150,6 +150,96 @@ export async function sendTip(recipientAddress, amountUSDT, creatorUsername, tri
   }
 }
 
+/**
+ * Smart Split Tip — splits a tip across creator + collaborators/causes
+ * splits: [{ address, pct, label }] where pct is 1-100
+ * Creator gets (100 - sum(pct))% of the total
+ */
+export async function sendSplitTip(creatorAddress, splits, totalAmountUSDT, creatorUsername, trigger) {
+  if (!accountInstance) throw new Error("Wallet not initialized");
+
+  const chain = (await getKey("walletChain")) || DEFAULT_CHAIN;
+  const usdtAddr = TOKENS.USDT.addresses[chain];
+  if (!usdtAddr) throw new Error(`No USDt address for chain: ${chain}`);
+
+  const fromAddress = cachedAddress;
+  const results = [];
+
+  // Calculate amounts
+  let splitTotal = 0;
+  const splitPayments = [];
+  for (const s of (splits || [])) {
+    if (!s.address || !s.pct || s.pct <= 0) continue;
+    const pct = Math.min(s.pct, 50); // Cap at 50% per split
+    const amount = Math.round(totalAmountUSDT * (pct / 100) * 100) / 100;
+    if (amount >= 0.01) {
+      splitPayments.push({ address: s.address, amount, label: s.label || "split" });
+      splitTotal += amount;
+    }
+  }
+  const creatorAmount = Math.round((totalAmountUSDT - splitTotal) * 100) / 100;
+
+  console.log(`[WDK] Smart split: $${creatorAmount} to ${creatorUsername} + ${splitPayments.length} splits ($${splitTotal})`);
+
+  // Send to creator first
+  if (creatorAmount >= 0.01) {
+    try {
+      const creatorBase = BigInt(Math.floor(creatorAmount * 1e6));
+      const r = await accountInstance.transfer({ token: usdtAddr, recipient: creatorAddress, amount: creatorBase });
+      console.log(`[WDK] Creator tip confirmed: ${r.hash}`);
+      results.push({
+        id: `tip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        fromAddress, toAddress: creatorAddress,
+        amount: creatorAmount.toFixed(2), txHash: r.hash,
+        creatorUsername, triggerReason: trigger,
+        timestamp: Date.now(), status: "confirmed", chain,
+        splitLabel: "creator",
+      });
+    } catch (err) {
+      console.error(`[WDK] Creator tip failed:`, err.message);
+      results.push({
+        id: `tip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        fromAddress, toAddress: creatorAddress,
+        amount: creatorAmount.toFixed(2), txHash: "",
+        creatorUsername, triggerReason: trigger,
+        timestamp: Date.now(), status: "failed", chain,
+        splitLabel: "creator", error: err.message,
+      });
+    }
+  }
+
+  // Send to each split recipient
+  for (const sp of splitPayments) {
+    try {
+      const spBase = BigInt(Math.floor(sp.amount * 1e6));
+      const r = await accountInstance.transfer({ token: usdtAddr, recipient: sp.address, amount: spBase });
+      console.log(`[WDK] Split tip (${sp.label}) confirmed: ${r.hash}`);
+      results.push({
+        id: `tip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        fromAddress, toAddress: sp.address,
+        amount: sp.amount.toFixed(2), txHash: r.hash,
+        creatorUsername: `${creatorUsername}/${sp.label}`,
+        triggerReason: `${trigger}_split`,
+        timestamp: Date.now(), status: "confirmed", chain,
+        splitLabel: sp.label,
+      });
+    } catch (err) {
+      console.error(`[WDK] Split (${sp.label}) failed:`, err.message);
+      results.push({
+        id: `tip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        fromAddress, toAddress: sp.address,
+        amount: sp.amount.toFixed(2), txHash: "",
+        creatorUsername: `${creatorUsername}/${sp.label}`,
+        triggerReason: `${trigger}_split`,
+        timestamp: Date.now(), status: "failed", chain,
+        splitLabel: sp.label, error: err.message,
+      });
+    }
+  }
+
+  return results;
+}
+
 // ── Change chain ──
 
 export async function switchChain(newChain) {

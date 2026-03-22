@@ -690,3 +690,73 @@
      color: var(--fg2);
      letter-spacing: 0.5px;
    }
+   
+   /* ═══ Splits ═══ */
+   .split-add {
+     display: grid;
+     grid-template-columns: 1fr 1.5fr 50px 20px;
+     gap: 4px;
+     align-items: center;
+     margin-bottom: 6px;
+   }
+   
+   .split-input {
+     font-size: 10px;
+     padding: 4px 6px;
+   }
+   
+   .split-pct {
+     width: 50px;
+     font-size: 10px;
+     padding: 4px;
+     text-align: center;
+   }
+   
+   .split-pct-label {
+     font-family: var(--mono);
+     font-size: 10px;
+     color: var(--fg2);
+   }
+   
+   .split-item {
+     display: flex;
+     justify-content: space-between;
+     align-items: center;
+     padding: 4px 6px;
+     background: rgba(255,255,255,0.03);
+     border-radius: 4px;
+     margin-bottom: 3px;
+     font-size: 10px;
+   }
+   
+   .split-item .split-info {
+     display: flex;
+     gap: 8px;
+     align-items: center;
+   }
+   
+   .split-item .split-label {
+     color: var(--fg);
+     font-weight: 600;
+   }
+   
+   .split-item .split-addr-short {
+     font-family: var(--mono);
+     color: var(--fg2);
+     font-size: 9px;
+   }
+   
+   .split-item .split-pct-val {
+     font-family: var(--mono);
+     color: var(--accent);
+     font-weight: 700;
+   }
+   
+   .split-item .btn-remove {
+     background: none;
+     border: none;
+     color: var(--red);
+     cursor: pointer;
+     font-size: 12px;
+     padding: 0 4px;
+   }

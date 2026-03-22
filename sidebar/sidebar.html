@@ -187,6 +187,24 @@
         </div>
       </div>
 
+      <!-- Smart Splits -->
+      <div class="card">
+        <div class="card-header">SMART SPLITS</div>
+        <div class="card-body">
+          <p class="hint">Auto-split tips between creator + collaborators or causes</p>
+          <select id="split-creator"><option value="">select creator...</option></select>
+          <div id="splits-list" class="list"></div>
+          <div class="split-add">
+            <input id="split-label" placeholder="Label (e.g. Editor)" class="split-input" />
+            <input id="split-addr" placeholder="0x... address" class="mono split-input" />
+            <input id="split-pct" type="number" min="1" max="50" value="10" class="split-pct" />
+            <span class="split-pct-label">%</span>
+          </div>
+          <button id="btn-add-split" class="btn btn-secondary full">ADD SPLIT</button>
+          <div id="splits-active" class="list"></div>
+        </div>
+      </div>
+
       <!-- Pool -->
       <div class="card">
         <div class="card-header">COMMUNITY POOL</div>

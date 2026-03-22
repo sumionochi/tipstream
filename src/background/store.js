@@ -46,6 +46,9 @@ const DEFAULT_STORE = {
   // OpenAI
   openaiApiKey: "",
 
+  // Milestones
+  milestoneState: {},  // { followers: N, subscribers: N, lastCheck: timestamp }
+
   // Stats
   dailySpend: 0,
   dailySpendDate: new Date().toISOString().slice(0, 10),
@@ -181,18 +184,82 @@ export async function saveBudget(budget) {
 
 export async function setCreator(username, address) {
   const store = await getStore();
-  const creators = { ...(store.creators || {}), [username]: address };
+  const creators = { ...(store.creators || {}) };
+  // Support both old format (string) and new (object with splits)
+  const existing = creators[username];
+  if (existing && typeof existing === "object") {
+    creators[username] = { ...existing, address };
+  } else {
+    creators[username] = { address, splits: [] };
+  }
   await setStore({ creators });
 }
 
 export async function getCreator(username) {
   const store = await getStore();
-  return (store.creators || {})[username] || null;
+  const entry = (store.creators || {})[username];
+  if (!entry) return null;
+  // Backward compat: old format was just a string address
+  if (typeof entry === "string") return entry;
+  return entry.address || null;
+}
+
+export async function getCreatorFull(username) {
+  const store = await getStore();
+  const entry = (store.creators || {})[username];
+  if (!entry) return null;
+  if (typeof entry === "string") return { address: entry, splits: [] };
+  return entry;
 }
 
 export async function getAllCreators() {
   const store = await getStore();
-  return store.creators || {};
+  const raw = store.creators || {};
+  // Normalize to { username: address } for backward compat
+  const result = {};
+  for (const [u, v] of Object.entries(raw)) {
+    result[u] = typeof v === "string" ? v : v.address;
+  }
+  return result;
+}
+
+export async function getAllCreatorsFull() {
+  const store = await getStore();
+  const raw = store.creators || {};
+  const result = {};
+  for (const [u, v] of Object.entries(raw)) {
+    result[u] = typeof v === "string" ? { address: v, splits: [] } : v;
+  }
+  return result;
+}
+
+export async function setSplits(username, splits) {
+  const store = await getStore();
+  const creators = { ...(store.creators || {}) };
+  const entry = creators[username];
+  if (!entry) return;
+  if (typeof entry === "string") {
+    creators[username] = { address: entry, splits: splits || [] };
+  } else {
+    creators[username] = { ...entry, splits: splits || [] };
+  }
+  await setStore({ creators });
+}
+
+export async function getSplits(username) {
+  const full = await getCreatorFull(username);
+  return full?.splits || [];
+}
+
+// ── Milestones ──
+
+export async function getMilestoneState() {
+  const store = await getStore();
+  return store.milestoneState || {};
+}
+
+export async function setMilestoneState(state) {
+  await setStore({ milestoneState: state });
 }
 
 // ── Pools ──

@@ -116,6 +116,10 @@ async function init() {
   // OpenAI key
   $("btn-save-openai").onclick = saveOpenAIKey;
 
+  // Splits
+  $("btn-add-split").onclick = addSplit;
+  $("split-creator").onchange = loadSplits;
+
   // Hype slider label
   $("set-hype").oninput = () => { $("set-hype-val").textContent = $("set-hype").value; };
 
@@ -140,6 +144,12 @@ async function init() {
       if (h.isSpike) {
         addLog(`🔥 HYPE SPIKE ${h.score}/100 | ${h.chatVelocity} msg/s | keys: ${h.keywordHits?.join(", ") || "—"}`, "hype");
       }
+    }
+    if (m.type === "MILESTONE_HIT") {
+      const ml = m.data;
+      addLog(`🎉 MILESTONE! ${ml.username} hit ${ml.value} ${ml.type}s! Bonus tip: $${ml.tx?.amount || "?"}`, "tip");
+      showMsg("ok", `🎉 ${ml.username} hit ${ml.value} ${ml.type}s!`);
+      refreshDashboard();
     }
   });
 
@@ -497,6 +507,76 @@ async function saveOpenAIKey() {
   }
 }
 
+// ══════════════════════════════════════════
+// SMART SPLITS
+// ══════════════════════════════════════════
+
+async function loadSplits() {
+  const creator = $("split-creator").value;
+  if (!creator) { $("splits-active").innerHTML = ""; return; }
+  const res = await msg("SPLITS_GET", { username: creator });
+  const splits = res.success ? res.data : [];
+  renderSplits(creator, splits);
+}
+
+function renderSplits(creator, splits) {
+  if (!splits || splits.length === 0) {
+    $("splits-active").innerHTML = '<div class="hint">No splits — 100% goes to creator</div>';
+    return;
+  }
+  const totalPct = splits.reduce((s, sp) => s + sp.pct, 0);
+  $("splits-active").innerHTML = splits.map((sp, i) =>
+    `<div class="split-item">
+      <div class="split-info">
+        <span class="split-label">${sp.label}</span>
+        <span class="split-addr-short">${shortAddr(sp.address)}</span>
+      </div>
+      <span class="split-pct-val">${sp.pct}%</span>
+      <button class="btn-remove" data-creator="${creator}" data-idx="${i}">✕</button>
+    </div>`
+  ).join("") + `<div class="hint" style="margin-top:4px">Creator gets ${100 - totalPct}%</div>`;
+
+  // Wire remove buttons
+  $("splits-active").querySelectorAll(".btn-remove").forEach((btn) => {
+    btn.onclick = async () => {
+      const c = btn.dataset.creator;
+      const idx = parseInt(btn.dataset.idx);
+      const r = await msg("SPLITS_GET", { username: c });
+      const current = r.success ? r.data : [];
+      current.splice(idx, 1);
+      await msg("SPLITS_SAVE", { username: c, splits: current });
+      addLog(`Split removed from ${c}`, "");
+      loadSplits();
+    };
+  });
+}
+
+async function addSplit() {
+  const creator = $("split-creator").value;
+  const label = $("split-label").value.trim();
+  const addr = $("split-addr").value.trim();
+  const pct = parseInt($("split-pct").value);
+  if (!creator) return showMsg("err", "Select a creator first");
+  if (!label) return showMsg("err", "Label required (e.g. Editor, Charity)");
+  if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return showMsg("err", "Valid 0x address required");
+  if (!pct || pct < 1 || pct > 50) return showMsg("err", "Percentage must be 1-50%");
+
+  const res = await msg("SPLITS_GET", { username: creator });
+  const current = res.success ? res.data : [];
+  const totalPct = current.reduce((s, sp) => s + sp.pct, 0) + pct;
+  if (totalPct > 80) return showMsg("err", `Total splits can't exceed 80% (currently ${totalPct - pct}%)`);
+
+  current.push({ label, address: addr, pct });
+  await msg("SPLITS_SAVE", { username: creator, splits: current });
+
+  $("split-label").value = "";
+  $("split-addr").value = "";
+  $("split-pct").value = "10";
+  addLog(`Split added: ${label} (${pct}%) for ${creator}`, "tip");
+  showMsg("ok", `Split: ${pct}% to ${label}`);
+  loadSplits();
+}
+
 async function saveSettings() {
   const res = await msg("AGENT_SETTINGS_SAVE", {
     hypeThreshold: parseInt($("set-hype").value),
@@ -545,6 +625,7 @@ async function refreshCreators() {
   const options = Object.keys(creators).map((u) => `<option value="${u}">${u}</option>`).join("");
   $("tip-creator").innerHTML = `<option value="">select creator...</option>${options}`;
   $("budget-creator").innerHTML = `<option value="">select creator...</option>${options}`;
+  $("split-creator").innerHTML = `<option value="">select creator...</option>${options}`;
 
   // Budgets
   const budgetsRes = await msg("BUDGET_GET_ALL");
